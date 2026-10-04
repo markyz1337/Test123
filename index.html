@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nostalgie</title>
+</head>
+<body>
+<h3>Nostalgie</h3>
+<button id="start">▶ Start</button>
+<button id="stop">■ Stop</button>
+<button id="test">Test rezervă</button>
+<p id="status">Oprit</p>
+<p id="diag">Rezervă: -</p>
+
+<audio id="radio" preload="none"></audio>
+<audio id="fallback" loop></audio>
+
+<script>
+const STREAM = "https://sergiumusic.duckdns.org/muzicaveche";
+const RETRY_MS = 5000;     // la câte secunde reîncearcă
+const TIMEOUT_MS = 15000;  // cât așteaptă înainte să considere conexiunea pierdută
+
+const radio = document.getElementById("radio");
+const fallback = document.getElementById("fallback");
+const statusEl = document.getElementById("status");
+
+const FALLBACK_URL = "https://github.com/markyz1337/only-me/raw/refs/heads/main/Alessia%20-%20Hacker%20De%20Sentimente.mp3";
+
+// descarcă mp3-ul de rezervă complet în memorie, la încărcarea paginii
+const diagEl = document.getElementById("diag");
+function diag(t) { diagEl.textContent = "Rezervă: " + t; }
+
+async function loadFallback() {
+  try {
+    diag("se descarcă...");
+    const res = await fetch(FALLBACK_URL);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const buf = await res.arrayBuffer();
+    // tip MIME setat explicit, altfel unele browsere refuză să-l redea
+    const blob = new Blob([buf], { type: "audio/mpeg" });
+    fallback.src = URL.createObjectURL(blob);
+    fallback.load();
+    diag("descărcată în memorie (" + (buf.byteLength / 1048576).toFixed(1) + " MB)");
+  } catch (e) {
+    diag("descărcare eșuată (" + e.message + "), reîncerc...");
+    setTimeout(loadFallback, 5000);
+  }
+}
+loadFallback();
+fallback.addEventListener("error", () => diag("eroare la redare: cod " + (fallback.error && fallback.error.code)));
+fallback.addEventListener("playing", () => diag("RULEAZĂ"));
+
+let wantPlay = false;
+let retryTimer = null;
+let watchdog = null;
+
+function setStatus(t) { statusEl.textContent = t; }
+
+function connect() {
+  if (!wantPlay) return;
+  clearTimeout(retryTimer);
+  clearTimeout(watchdog);
+  setStatus("Se conectează...");
+  radio.src = STREAM + "?t=" + Date.now(); // evită cache-ul
+  radio.load();
+  radio.play().catch(() => {});
+  // dacă nu pornește în TIMEOUT_MS, considerăm eșec
+  watchdog = setTimeout(fail, TIMEOUT_MS);
+}
+
+function fail() {
+  if (!wantPlay) return;
+  clearTimeout(watchdog);
+  clearTimeout(retryTimer);
+  radio.pause();
+  setStatus("Conexiune pierdută – rulează melodia de rezervă. Reîncerc...");
+  if (fallback.paused) {
+    fallback.muted = false;
+    fallback.play().catch(e => setStatus("Rezerva nu pornește: " + e.name +
+      (fallback.src ? "" : " (mp3 încă nedescărcat)")));
+  }
+  retryTimer = setTimeout(connect, RETRY_MS);
+}
+
+radio.addEventListener("playing", () => {
+  clearTimeout(watchdog);
+  clearTimeout(retryTimer);
+  fallback.pause();
+  setStatus("Live");
+});
+
+["error", "ended"].forEach(ev =>
+  radio.addEventListener(ev, () => { if (wantPlay) fail(); })
+);
+
+// stream blocat la buffering prea mult
+radio.addEventListener("waiting", () => {
+  if (!wantPlay) return;
+  clearTimeout(watchdog);
+  watchdog = setTimeout(fail, 4000);
+});
+
+window.addEventListener("offline", () => { if (wantPlay) fail(); });
+window.addEventListener("online", () => { if (wantPlay) connect(); });
+
+// detector: dacă radioul "cântă" dar timpul nu avansează 4s => conexiune pierdută
+let lastTime = -1, stuckTicks = 0;
+setInterval(() => {
+  if (!wantPlay || radio.paused || !radio.src) { stuckTicks = 0; return; }
+  if (radio.currentTime === lastTime) {
+    if (++stuckTicks >= 2) { stuckTicks = 0; fail(); }
+  } else { stuckTicks = 0; lastTime = radio.currentTime; }
+}, 2000);
+
+document.getElementById("start").onclick = () => {
+  wantPlay = true;
+  // "deblochează" elementul de rezervă cu un click real (necesar pe iOS/Safari)
+  fallback.muted = true;
+  fallback.play().then(() => { fallback.pause(); fallback.muted = false; })
+    .catch(() => { fallback.muted = false; });
+  connect();
+};
+
+document.getElementById("test").onclick = () => {
+  if (fallback.paused) {
+    fallback.play().catch(e => diag("nu pornește: " + e.name + " " + e.message));
+  } else {
+    fallback.pause();
+  }
+};
+
+document.getElementById("stop").onclick = () => {
+  wantPlay = false;
+  clearTimeout(retryTimer);
+  clearTimeout(watchdog);
+  radio.pause();
+  radio.removeAttribute("src");
+  radio.load();
+  fallback.pause();
+  setStatus("Oprit");
+};
+</script>
+</body>
+</html>
